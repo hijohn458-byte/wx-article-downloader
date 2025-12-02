@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>微信公众号文章下载工具</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
+      margin: 0;
+      padding: 0;
+      background: #f5f5f7;
+    }
+    .container {
+      max-width: 720px;
+      margin: 40px auto;
+      padding: 24px;
+      background: #ffffff;
+      border-radius: 12px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.05);
+    }
+    h1 {
+      font-size: 22px;
+      margin-bottom: 8px;
+    }
+    p.desc {
+      color: #555;
+      font-size: 14px;
+      margin-top: 0;
+      margin-bottom: 16px;
+    }
+    textarea {
+      width: 100%;
+      min-height: 160px;
+      border-radius: 8px;
+      border: 1px solid #ddd;
+      padding: 10px 12px;
+      font-size: 13px;
+      resize: vertical;
+      box-sizing: border-box;
+      font-family: Menlo, Monaco, Consolas, "Courier New", monospace;
+    }
+    textarea:focus {
+      outline: none;
+      border-color: #409eff;
+      box-shadow: 0 0 0 2px rgba(64,158,255,0.2);
+    }
+    button {
+      margin-top: 16px;
+      padding: 10px 18px;
+      font-size: 14px;
+      border-radius: 999px;
+      border: none;
+      cursor: pointer;
+      background: #409eff;
+      color: #fff;
+      font-weight: 500;
+    }
+    button:hover {
+      background: #2b84da;
+    }
+    .hint {
+      font-size: 12px;
+      color: #888;
+      margin-top: 8px;
+    }
+    .flash {
+      background: #ffecec;
+      color: #d93025;
+      border-radius: 8px;
+      padding: 8px 10px;
+      margin-bottom: 12px;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+<div class="container">
+  <h1>微信公众号文章下载工具</h1>
+  <p class="desc">
+    粘贴微信公众号文章链接（支持多条，每行一条），点击下方按钮即可下载为 PDF。
+    多篇文章将自动打包为 ZIP。
+  </p>
+
+  {% with messages = get_flashed_messages() %}
+    {% if messages %}
+      {% for msg in messages %}
+        <div class="flash">{{ msg }}</div>
+      {% endfor %}
+    {% endif %}
+  {% endwith %}
+
+  <form method="post">
+    <textarea
+      name="urls"
+      placeholder="例如：&#10;https://mp.weixin.qq.com/s/xxxxxxxx&#10;https://mp.weixin.qq.com/s/yyyyyyyy">
+    </textarea>
+    <div class="hint">
+      提示：生成的 PDF 会尽量保留文章原有排版 / 图片 / 评论（页面上能看到的部分）。
+    </div>
+    <button type="submit">一键下载</button>
+  </form>
+</div>
+</body>
+</html>
