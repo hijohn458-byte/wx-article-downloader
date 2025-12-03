@@ -1,205 +1,162 @@
 import os
-import io
-import re
+import tempfile
 import zipfile
-import traceback
-from datetime import datetime
+import uuid
 
-from flask import (
-    Flask,
-    render_template,
-    request,
-    send_file,
-    flash,
-)
-
+from flask import Flask, render_template, request, send_file, after_this_request
 from playwright.sync_api import sync_playwright
 
-# -------------------------------------------------
-# Flask 基础配置
-# -------------------------------------------------
 app = Flask(__name__)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-secret-key")
 
-
-# -------------------------------------------------
-# 工具函数
-# -------------------------------------------------
-WECHAT_MOBILE_UA = (
+# 模拟 iPhone 微信内置浏览器，避免出现“请在微信客户端打开链接”的提示页
+WECHAT_UA = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) "
     "AppleWebKit/605.1.15 (KHTML, like Gecko) "
-    "Version/16.0 Mobile/15E148 Safari/604.1 "
-    "MicroMessenger/8.0.47(0x18002F2C) NetType/WIFI Language/zh_CN"
+    "Mobile/15E148 MicroMessenger/8.0.42(0x18002a2b) NetType/WIFI Language/zh_CN"
 )
 
 
-def sanitize_filename(name: str, default: str = "wechat-article") -> str:
-    """把网页标题变成安全的文件名."""
+def sanitize_filename(name: str, default: str) -> str:
     if not name:
-        name = default
-
-    # 去掉前后空格
+        return default
+    # 去掉文件名非法字符
+    bad_chars = '\\/:*?"<>|'
+    for ch in bad_chars:
+        name = name.replace(ch, "_")
     name = name.strip()
-
-    # Windows / Linux / macOS 中不允许的字符
-    name = re.sub(r'[\\/:*?"<>|]+', "_", name)
-
-    # 避免空文件名
-    if not name:
-        name = default
-
-    # 长度限制，防止路径过长
-    if len(name) > 80:
-        name = name[:80]
-
-    return name
+    return name or default
 
 
-def generate_pdfs_for_urls(urls):
+def generate_pdf_for_url(p, url: str, index: int):
     """
-    使用 Playwright 把多个微信文章链接转成 PDF。
-    返回值：
-        - files: 生成的 PDF 本地路径列表
+    使用 Playwright 打开公众号文章，并导出为 PDF。
+    返回：pdf_path, file_name（不带扩展名）
     """
-    files = []
+    browser = p.chromium.launch(
+        headless=True,
+        args=[
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+        ],
+    )
 
-    # 用临时目录存放 PDF
-    tmp_dir = "/tmp/wx_article_pdfs"
-    os.makedirs(tmp_dir, exist_ok=True)
+    context = browser.new_context(
+        user_agent=WECHAT_UA,
+        viewport={"width": 1280, "height": 720},
+    )
+    page = context.new_page()
 
-    with sync_playwright() as p:
-        # Render 上必须加上这些 sandbox 相关参数
-        browser = p.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-            ],
-        )
+    page.goto(url, wait_until="networkidle", timeout=60000)
 
-        # 用接近微信内置浏览器的 UA，附带 Referer，避免被拦截
-        context = browser.new_context(
-            user_agent=WECHAT_MOBILE_UA,
-            viewport={"width": 1280, "height": 720},
-            device_scale_factor=2,
-            locale="zh-CN",
-            extra_http_headers={
-                "Referer": "https://mp.weixin.qq.com/",
-                "Accept-Language": "zh-CN,zh;q=0.9",
-            },
-        )
+    # 某些号会有“继续访问 / 点击此处打开正文”之类的中间页，这里尝试点掉
+    try:
+        if page.is_visible("text=继续访问"):
+            page.click("text=继续访问")
+            page.wait_for_timeout(2000)
+        if page.is_visible("text=点击此处打开正文"):
+            page.click("text=点击此处打开正文")
+            page.wait_for_timeout(2000)
+    except Exception:
+        pass
 
-        page = context.new_page()
+    # 等待真正的文章内容加载出来
+    page.wait_for_selector("div#js_content", timeout=30000)
 
-        for idx, url in enumerate(urls, start=1):
-            print(f"[INFO] 开始处理第 {idx} 条链接：{url}", flush=True)
+    # 优先使用 h1#activity-name 作为标题
+    title = page.title()
+    try:
+        article_title = page.text_content("h1#activity-name")
+        if article_title:
+            title = article_title.strip()
+    except Exception:
+        pass
 
-            try:
-                # 打开链接，等待网络空闲
-                page.goto(url, wait_until="networkidle", timeout=60_000)
-                # 再额外等一会儿，保证懒加载图片加载出来
-                page.wait_for_timeout(2_000)
+    safe_name = sanitize_filename(title, f"article-{index+1}")
+    pdf_path = os.path.join(tempfile.gettempdir(), f"{safe_name}.pdf")
 
-                # 读取标题
-                try:
-                    title = page.title()
-                except Exception:
-                    title = f"article-{idx}"
+    page.pdf(
+        path=pdf_path,
+        format="A4",
+        print_background=True,
+        margin={"top": "15mm", "bottom": "15mm", "left": "10mm", "right": "10mm"},
+    )
 
-                safe_title = sanitize_filename(title, f"article-{idx}")
-                pdf_path = os.path.join(tmp_dir, f"{safe_title}.pdf")
+    context.close()
+    browser.close()
 
-                print(f"[INFO] 生成 PDF: {pdf_path}", flush=True)
-
-                page.pdf(
-                    path=pdf_path,
-                    format="A4",
-                    print_background=True,
-                    margin={"top": "10mm", "bottom": "10mm", "left": "10mm", "right": "10mm"},
-                )
-
-                files.append(pdf_path)
-
-            except Exception as e:
-                # 某一条失败了，记录日志，继续处理后面的
-                print(f"[ERROR] 处理链接失败：{url}", flush=True)
-                traceback.print_exc()
-                continue
-
-        context.close()
-        browser.close()
-
-    return files
+    return pdf_path, safe_name
 
 
-# -------------------------------------------------
-# Flask 路由
-# -------------------------------------------------
-@app.route("/", methods=["GET", "POST"])
+@app.route("/", methods=["GET"])
 def index():
-    if request.method == "POST":
-        raw_text = request.form.get("urls", "").strip()
-
-        if not raw_text:
-            flash("请粘贴至少一条微信公众号文章链接。")
-            return render_template("index.html")
-
-        # 支持多行，一行一条链接
-        urls = [line.strip() for line in raw_text.splitlines() if line.strip()]
-        if not urls:
-            flash("未检测到有效链接，请检查后重试。")
-            return render_template("index.html")
-
-        try:
-            pdf_files = generate_pdfs_for_urls(urls)
-
-            if not pdf_files:
-                flash("所有链接都下载失败，请稍后重试。")
-                return render_template("index.html")
-
-            # 只有一篇文章：直接返回 PDF
-            if len(pdf_files) == 1:
-                pdf_path = pdf_files[0]
-                filename = os.path.basename(pdf_path)
-                return send_file(
-                    pdf_path,
-                    mimetype="application/pdf",
-                    as_attachment=True,
-                    download_name=filename,
-                )
-
-            # 多篇文章：打包成 ZIP 返回
-            mem = io.BytesIO()
-            with zipfile.ZipFile(mem, "w", zipfile.ZIP_DEFLATED) as zf:
-                for path in pdf_files:
-                    arcname = os.path.basename(path)
-                    zf.write(path, arcname=arcname)
-
-            mem.seek(0)
-            zip_name = f"wechat_articles_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
-
-            return send_file(
-                mem,
-                mimetype="application/zip",
-                as_attachment=True,
-                download_name=zip_name,
-            )
-
-        except Exception as e:
-            print("[FATAL] 下载流程出错：", e, flush=True)
-            traceback.print_exc()
-            flash("下载时发生错误，请检查服务端日志或稍后再试。")
-            return render_template("index.html")
-
-    # GET 请求：只渲染页面
     return render_template("index.html")
 
 
-# -------------------------------------------------
-# 本地调试入口
-# -------------------------------------------------
+@app.route("/download", methods=["POST"])
+def download():
+    raw = request.form.get("urls", "").strip()
+    urls = [u.strip() for u in raw.splitlines() if u.strip()]
+    if not urls:
+        return "请先粘贴至少一个链接", 400
+
+    pdf_files = []
+
+    with sync_playwright() as p:
+        for idx, url in enumerate(urls):
+            pdf_path, _ = generate_pdf_for_url(p, url, idx)
+            pdf_files.append(pdf_path)
+
+    # 下载单个 PDF
+    if len(pdf_files) == 1:
+        pdf_path = pdf_files[0]
+        filename = os.path.basename(pdf_path)
+
+        @after_this_request
+        def cleanup(response):
+            try:
+                os.remove(pdf_path)
+            except FileNotFoundError:
+                pass
+            return response
+
+        return send_file(
+            pdf_path,
+            as_attachment=True,
+            download_name=filename,
+            mimetype="application/pdf",
+        )
+
+    # 多个 PDF：打包成 ZIP
+    zip_path = os.path.join(
+        tempfile.gettempdir(), f"wx-articles-{uuid.uuid4().hex}.zip"
+    )
+
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for pdf_path in pdf_files:
+            zf.write(pdf_path, arcname=os.path.basename(pdf_path))
+
+    @after_this_request
+    def cleanup_zip(response):
+        for pdf_path in pdf_files:
+            try:
+                os.remove(pdf_path)
+            except FileNotFoundError:
+                pass
+        try:
+            os.remove(zip_path)
+        except FileNotFoundError:
+            pass
+        return response
+
+    return send_file(
+        zip_path,
+        as_attachment=True,
+        download_name="wechat-articles.zip",
+        mimetype="application/zip",
+    )
+
+
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    app.run(debug=True)
