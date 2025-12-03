@@ -125,7 +125,7 @@
   </div>
 
   <!-- 关键点：用普通 form POST，交给浏览器直接下载响应内容 -->
-  <form method="post" action="/">
+  <form method="post" action="{{ url_for('download') }}">
     <label class="textarea-label" for="urls">
       在下面粘贴公众号文章链接（每行一条）：
     </label>
