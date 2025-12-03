@@ -17,9 +17,9 @@ WECHAT_UA = (
 
 
 def sanitize_filename(name: str, default: str) -> str:
+    """简单清洗一下标题，避免文件名里有非法字符"""
     if not name:
         return default
-    # 去掉文件名非法字符
     bad_chars = '\\/:*?"<>|'
     for ch in bad_chars:
         name = name.replace(ch, "_")
@@ -42,15 +42,20 @@ def generate_pdf_for_url(p, url: str, index: int):
         ],
     )
 
+    # 模拟 iPhone 竖屏
     context = browser.new_context(
         user_agent=WECHAT_UA,
-        viewport={"width": 1280, "height": 720},
+        viewport={"width": 430, "height": 932},  # iPhone 14 左右尺寸
+        device_scale_factor=2,
+        is_mobile=True,
+        has_touch=True,
     )
     page = context.new_page()
 
+    # 打开链接
     page.goto(url, wait_until="networkidle", timeout=60000)
 
-    # 某些号会有“继续访问 / 点击此处打开正文”之类的中间页，这里尝试点掉
+    # 有些号会有“继续访问 / 点击此处打开正文”之类的中间页，这里尝试点掉
     try:
         if page.is_visible("text=继续访问"):
             page.click("text=继续访问")
@@ -64,6 +69,37 @@ def generate_pdf_for_url(p, url: str, index: int):
     # 等待真正的文章内容加载出来
     page.wait_for_selector("div#js_content", timeout=30000)
 
+    # --- 关键：滚动整页，触发懒加载图片 ---
+    try:
+        page.evaluate(
+            """
+            () => {
+                return new Promise((resolve) => {
+                    let totalHeight = 0;
+                    const distance = 600;
+
+                    const timer = setInterval(() => {
+                        const scrollHeight = document.body.scrollHeight;
+                        window.scrollBy(0, distance);
+                        totalHeight += distance;
+
+                        if (totalHeight >= scrollHeight - window.innerHeight) {
+                            clearInterval(timer);
+                            // 再等一秒，让图片把最后一点内容加载完
+                            setTimeout(resolve, 1000);
+                        }
+                    }, 300);
+                });
+            }
+            """
+        )
+    except Exception:
+        # 滚动失败就算了，不影响整体
+        pass
+
+    # 再稍微等一下网络请求（图片等）彻底结束
+    page.wait_for_timeout(1000)
+
     # 优先使用 h1#activity-name 作为标题
     title = page.title()
     try:
@@ -73,9 +109,10 @@ def generate_pdf_for_url(p, url: str, index: int):
     except Exception:
         pass
 
-    safe_name = sanitize_filename(title, f"article-{index+1}")
+    safe_name = sanitize_filename(title, f"article-{index + 1}")
     pdf_path = os.path.join(tempfile.gettempdir(), f"{safe_name}.pdf")
 
+    # 导出 PDF
     page.pdf(
         path=pdf_path,
         format="A4",
@@ -108,7 +145,7 @@ def download():
             pdf_path, _ = generate_pdf_for_url(p, url, idx)
             pdf_files.append(pdf_path)
 
-    # 下载单个 PDF
+    # 只下载单个 PDF
     if len(pdf_files) == 1:
         pdf_path = pdf_files[0]
         filename = os.path.basename(pdf_path)
@@ -159,4 +196,5 @@ def download():
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    # 本地调试用，Render Docker 会走 gunicorn
+    app.run(debug=True, host="0.0.0.0", port=5000)
