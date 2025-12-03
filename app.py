@@ -115,7 +115,15 @@ def index():
         # 用 Playwright 处理所有链接
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
+                browser = p.chromium.launch(
+                    headless=True,
+                    args=[
+                        "--no-sandbox",
+                        "--disable-setuid-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-gpu",
+                    ],
+                )
                 context = browser.new_context()
                 page = context.new_page()
 
